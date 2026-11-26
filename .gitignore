@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# keep .terraform.lock.hcl committed (do NOT ignore it)
+
+# Secrets / local
+*.pem
+*.key
+
+# Terraform variable values — may contain account IDs; never publish.
+# Ignore ALL tfvars; commit a sanitized *.tfvars.example if you want a template.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

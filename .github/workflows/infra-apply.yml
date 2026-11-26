@@ -1,0 +1,36 @@
+# .github/workflows/infra-apply.yml
+# Runs on merge to main. Applies the governance stack, gated by a GitHub Environment.
+name: infra-apply
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "infra/**"
+      - "!infra/bootstrap/**"   # bootstrap is applied by hand, never by the pipeline
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  apply-governance:
+    runs-on: ubuntu-latest
+    environment: prod
+    defaults:
+      run:
+        working-directory: infra/global
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform apply -auto-approve
+
+  # For the PER-ENV APP stacks (infra/envs/dev|stage|prod) you add the promotion:
+  # apply-dev -> apply-stage (needs apply-dev) -> apply-prod (needs apply-stage),
+  # each with environment: <env> and role-to-assume pointing at that env's role.
