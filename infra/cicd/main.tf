@@ -189,15 +189,42 @@ resource "aws_codepipeline" "this" {
   stage {
     name = "Test"
     action {
-      name            = "Validate"
+      name            = "Validate-Dev"
       category        = "Build"
       owner           = "AWS"
       provider        = "CodeBuild"
       version         = "1"
+      run_order       = 1
       input_artifacts = ["source"]
       configuration = {
         ProjectName          = aws_codebuild_project.tf.name
         EnvironmentVariables = jsonencode([{ name = "ENV", value = "dev", type = "PLAINTEXT" }, { name = "MODE", value = "validate", type = "PLAINTEXT" }])
+      }
+    }
+    action {
+      name            = "Validate-Stage"
+      category        = "Build"
+      owner           = "AWS"
+      provider        = "CodeBuild"
+      version         = "1"
+      run_order       = 1
+      input_artifacts = ["source"]
+      configuration = {
+        ProjectName          = aws_codebuild_project.tf.name
+        EnvironmentVariables = jsonencode([{ name = "ENV", value = "stage", type = "PLAINTEXT" }, { name = "MODE", value = "validate", type = "PLAINTEXT" }])
+      }
+    }
+    action {
+      name            = "Validate-Prod"
+      category        = "Build"
+      owner           = "AWS"
+      provider        = "CodeBuild"
+      version         = "1"
+      run_order       = 1
+      input_artifacts = ["source"]
+      configuration = {
+        ProjectName          = aws_codebuild_project.tf.name
+        EnvironmentVariables = jsonencode([{ name = "ENV", value = "prod", type = "PLAINTEXT" }, { name = "MODE", value = "validate", type = "PLAINTEXT" }])
       }
     }
   }
