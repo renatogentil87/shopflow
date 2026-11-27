@@ -1,19 +1,9 @@
 version: 0.2
 
-# One buildspec, reused by every pipeline action. Inputs from the action:
-#   ENV  = dev | stage | prod
-#   MODE = validate | plan | apply
-#
-#   validate : fmt + validate + checkov + trivy + terraform test  (offline, no state)
-#   plan     : terraform plan -out=tfplan (+ plan.txt); exported as the action artifact
-#   apply    : terraform apply of the SAVED tfplan
-#
-# SEC_SOFT_FAIL=true reports security findings without failing the build (default: fail).
-
 env:
   variables:
+    # Default only. A value set on the CodeBuild project overrides this.
     TF_VERSION: "1.10.5"
-    SEC_SOFT_FAIL: "false"
 
 phases:
   install:
@@ -21,67 +11,85 @@ phases:
       - curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tf.zip
       - unzip -o /tmp/tf.zip -d /usr/local/bin
       - terraform version
-      # Scanners are only needed for the validate stage — skip them for plan/apply.
       - |
         if [ "$MODE" = "validate" ]; then
           pip install --quiet checkov
           curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
           trivy --version
         fi
+
   build:
     commands:
+      # Each pipeline action sets ENV (dev|stage|prod) and MODE (validate|plan|apply)
       - cd "infra/envs/${ENV}"
       - |
-        case "$MODE" in
-          validate)
-            # offline init: installs providers + modules, no backend/state/creds needed
-            terraform init -backend=false -input=false
-            terraform fmt -check -recursive ../..
-            terraform validate
-            if [ "$SEC_SOFT_FAIL" = "true" ]; then SOFT="--soft-fail"; TRIVY_EXIT=0; else SOFT=""; TRIVY_EXIT=1; fi
-            echo "== checkov ==" && checkov -d . --quiet --compact $SOFT
-            echo "== trivy ==" && trivy config . --severity HIGH,CRITICAL --exit-code $TRIVY_EXIT
-            # terraform test runs *.tftest.hcl if any exist; keep them command=plan (non-mutating)
-            if ls *.tftest.hcl tests/*.tftest.hcl >/dev/null 2>&1; then
-              echo "== terraform test ==" && terraform test
+        set -eu    # stop at the first error; treat unset variables as errors
+
+        # ---------- VALIDATE: check the code, change nothing ----------
+        if [ "${MODE:-}" = "validate" ]; then
+          terraform init -backend=false -input=false   # offline init, no state or credentials needed
+          terraform fmt -check -recursive ../..
+          terraform validate
+
+          # Security scanners: either report only (soft fail) or fail the build
+          if [ "${SEC_SOFT_FAIL:-false}" = "true" ]; then
+            SOFT="--soft-fail"
+            TRIVY_EXIT=0
+          else
+            SOFT=""
+            TRIVY_EXIT=1
+          fi
+          echo "== checkov =="
+          checkov -d . --quiet --compact $SOFT
+          echo "== trivy =="
+          trivy config . --severity HIGH,CRITICAL --exit-code $TRIVY_EXIT
+
+          # Run terraform tests only if test files exist
+          if ls *.tftest.hcl tests/*.tftest.hcl >/dev/null 2>&1; then
+            echo "== terraform test =="
+            terraform test
+          else
+            echo "no .tftest.hcl files, skipping terraform test"
+          fi
+
+        # ---------- PLAN: work out what would change, save it as tfplan ----------
+        elif [ "${MODE:-}" = "plan" ]; then
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+          terraform show -json tfplan > plan.json
+
+          # Destroy guard: count the resources the plan would delete
+          DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
+          echo "resources to destroy: $DESTROYS"
+
+          if [ "$DESTROYS" -gt 0 ]; then
+            echo "Resources that would be DESTROYED:"
+            jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
+
+            # Allowed only if the commit message contains [allow-destroy]
+            MSG=$(git -C "$CODEBUILD_SRC_DIR" log -1 --pretty=%B 2>/dev/null || echo "")
+            if echo "$MSG" | grep -q '\[allow-destroy\]'; then
+              echo "✅ [allow-destroy] found in commit message — destroy permitted."
             else
-              echo "no .tftest.hcl files, skipping terraform test"
+              echo "❌ Plan would destroy $DESTROYS resource(s). Add [allow-destroy] to the commit message to proceed."
+              exit 1
             fi
-            ;;
-          plan)
+          fi
 
-            set -eu
-            terraform init -input=false
-            terraform plan -input=false -out=tfplan
-            terraform show -no-color tfplan > plan.txt
-            terraform show -json tfplan > plan.json
-            # Destroy guard: fail if the plan would delete anything, UNLESS the
-            # triggering commit message contains [allow-destroy].
-            DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
-            case "$DESTROYS" in ''|*[!0-9]*) echo "could not compute destroy count"; exit 1;; esac
-            echo "resources to destroy: $DESTROYS"
-            if [ "$DESTROYS" -gt 0 ]; then
-              echo "Resources that would be DESTROYED:"
-              jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
-              # CODEBUILD_SOURCE_VERSION is the commit SHA CodePipeline checked out.
-              MSG=$(git -C "$CODEBUILD_SRC_DIR" log -1 --pretty=%B 2>/dev/null || echo "")
-              if echo "$MSG" | grep -q '\[allow-destroy\]'; then
-                echo "✅ [allow-destroy] found in commit message — destroy permitted."
-              else
-                echo "❌ Plan would destroy $DESTROYS resource(s). Add [allow-destroy] to the commit message to proceed."
-                exit 1
-              fi
-            fi
-            ;;
-          apply)
-            terraform init -input=false
-            terraform apply -input=false tfplan
-            ;;
-          *)
-            echo "unknown MODE=$MODE (expected validate|plan|apply)" && exit 1
-            ;;
-        esac
+        # ---------- APPLY: run the saved plan ----------
+        elif [ "${MODE:-}" = "apply" ]; then
+          terraform init -input=false
+          terraform apply -input=false tfplan
 
+        # ---------- anything else is a mistake ----------
+        else
+          echo "unknown MODE=${MODE:-} (expected validate|plan|apply)"
+          exit 1
+        fi
+
+# The Plan action passes this to the Apply action, so tfplan must be included.
 artifacts:
+  base-directory: .
   files:
-    - '**/*'
+    - "**/*"
