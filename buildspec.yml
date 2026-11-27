@@ -1,8 +1,14 @@
 version: 0.2
 
-# Reused by every pipeline stage. Two inputs come from the pipeline action:
-#   ENV  = dev | stage | prod   (which infra/envs/<ENV> dir to run)
-#   MODE = validate | apply
+# One buildspec, reused by every pipeline action. Two inputs come from the action:
+#   ENV  = dev | stage | prod        (which infra/envs/<ENV> dir to run)
+#   MODE = validate | plan | apply
+#
+#   validate : fmt + validate (changes nothing)
+#   plan     : terraform plan -out=tfplan  (+ human-readable plan.txt); the pipeline
+#              exports the whole tree as this action's OUTPUT artifact
+#   apply    : terraform apply of the SAVED tfplan from the plan action's artifact
+#
 # Terraform isn't in the standard CodeBuild image, so we install it here.
 
 env:
@@ -20,9 +26,26 @@ phases:
       - cd "infra/envs/${ENV}"
       - terraform init -input=false
       - |
-        if [ "$MODE" = "validate" ]; then
-          terraform fmt -check -recursive ../..
-          terraform validate
-        else
-          terraform apply -auto-approve -input=false
-        fi
+        case "$MODE" in
+          validate)
+            terraform fmt -check -recursive ../..
+            terraform validate
+            ;;
+          plan)
+            terraform plan -input=false -out=tfplan
+            terraform show -no-color tfplan > plan.txt
+            ;;
+          apply)
+            terraform apply -input=false tfplan
+            ;;
+          *)
+            echo "unknown MODE=$MODE (expected validate|plan|apply)" && exit 1
+            ;;
+        esac
+
+# Carry the WHOLE tree to the next action: the apply action needs the env dir,
+# the saved tfplan, AND the modules it references (../../modules/...). Apply
+# re-inits (fast, honours the lock file) then applies the saved plan.
+artifacts:
+  files:
+    - '**/*'
