@@ -49,6 +49,7 @@ phases:
             fi
             ;;
           plan)
+
             set -eu
             terraform init -input=false
             terraform plan -input=false -out=tfplan
