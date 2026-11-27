@@ -1,0 +1,28 @@
+version: 0.2
+
+# Reused by every pipeline stage. Two inputs come from the pipeline action:
+#   ENV  = dev | stage | prod   (which infra/envs/<ENV> dir to run)
+#   MODE = validate | apply
+# Terraform isn't in the standard CodeBuild image, so we install it here.
+
+env:
+  variables:
+    TF_VERSION: "1.10.5"
+
+phases:
+  install:
+    commands:
+      - curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tf.zip
+      - unzip -o /tmp/tf.zip -d /usr/local/bin
+      - terraform version
+  build:
+    commands:
+      - cd "infra/envs/${ENV}"
+      - terraform init -input=false
+      - |
+        if [ "$MODE" = "validate" ]; then
+          terraform fmt -check -recursive ../..
+          terraform validate
+        else
+          terraform apply -auto-approve -input=false
+        fi
