@@ -1,0 +1,54 @@
+# buildspec/apply.yml — CodeBuild "deploy/apply" stage for the Terraform pipeline
+#
+# This is the real replacement for "CodeDeploy": CodeDeploy cannot run Terraform.
+# This action consumes the plan artifact produced by buildspec/test.yml and runs
+# `terraform apply` of that exact plan. For prod, put a CodePipeline MANUAL APPROVAL
+# action immediately before this one.
+#
+# REQUIRED environment variables (same as test.yml):
+#   TF_ENV, TF_STATE_BUCKET, TF_STATE_REGION, AWS_DEFAULT_REGION
+# OPTIONAL:
+#   TF_VERSION  (MUST match test.yml / your local version)
+#
+# INPUT: the "tf-plan-$TF_ENV" artifact from the Test action (set it as the input
+#        artifact of this CodeBuild action in CodePipeline). It contains the working
+#        dir, .terraform plugins, the lockfile, and the saved `tfplan`.
+
+version: 0.2
+
+env:
+  variables:
+    TF_VERSION: "1.17.2"            # keep identical to buildspec/test.yml
+
+phases:
+  install:
+    commands:
+      - set -euo pipefail
+      - curl -fsSL -o /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -o /tmp/tf.zip -d /usr/local/bin
+      - terraform version
+
+  pre_build:
+    commands:
+      - set -euo pipefail
+      - test -n "${TF_ENV}" || { echo "TF_ENV is required (dev|stage|prod)"; exit 1; }
+      - export TF_DIR="infra/envs/${TF_ENV}"
+      - cd "${TF_DIR}"
+      # Re-init against the same backend. Fast: provider plugins arrive in the artifact.
+      - |
+        terraform init -input=false \
+          -backend-config="bucket=${TF_STATE_BUCKET}" \
+          -backend-config="key=env/${TF_ENV}/terraform.tfstate" \
+          -backend-config="region=${TF_STATE_REGION}" \
+          -backend-config="encrypt=true" \
+          -backend-config="use_lockfile=true"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - cd "infra/envs/${TF_ENV}"
+      - test -f tfplan || { echo "No saved plan found. Did the Test action's artifact feed this action?"; exit 1; }
+      # Apply the REVIEWED plan. Terraform refuses if state drifted since the plan,
+      # which is the safety behavior you want after an approval gate.
+      - echo "== terraform apply (saved plan) ==" && terraform apply -input=false -lock=true tfplan
+      - terraform output -no-color || true
