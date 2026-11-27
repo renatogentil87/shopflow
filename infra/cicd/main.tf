@@ -1,12 +1,14 @@
 # main.tf — the CI/CD stack.
-# Flow: Source(GitHub, merge to main) -> Test(validate) -> Deploy-Dev -> Deploy-Stage
-#       -> Manual approval -> Deploy-Prod. One CodeBuild project, reused; each stage
-#       passes ENV (which env dir) and MODE (validate|apply) as action env vars.
+# Flow: Source(merge->main) -> Test(validate) -> Dev(plan->apply)
+#       -> Stage(plan->apply) -> Prod(plan->approval->apply).
+# One CodeBuild project, reused; each action passes ENV + MODE. The plan action
+# exports a saved tfplan artifact that the apply action consumes, so apply does
+# exactly what was planned/reviewed.
 
 data "aws_caller_identity" "current" {}
 
-# Account IDs come from SSM (same scheme as the env stacks), used only to build
-# the deployer-role ARNs CodeBuild is allowed to assume.
+# Account IDs from SSM (same scheme as the env stacks) -> deployer-role ARNs
+# CodeBuild is allowed to assume.
 data "aws_ssm_parameter" "dev" { name = "/shopflow/accounts/dev" }
 data "aws_ssm_parameter" "stage" { name = "/shopflow/accounts/stage" }
 data "aws_ssm_parameter" "prod" { name = "/shopflow/accounts/prod" }
@@ -20,7 +22,7 @@ locals {
 }
 
 # ----------------------------------------------------------------------------
-# Artifact bucket (CodePipeline hands artifacts between stages through here)
+# Artifact bucket
 # ----------------------------------------------------------------------------
 resource "aws_s3_bucket" "artifacts" {
   bucket = var.artifact_bucket_name
@@ -44,9 +46,7 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
 }
 
 # ----------------------------------------------------------------------------
-# CodeBuild service role — what Terraform-in-CodeBuild runs as.
-# NOTE: the spoke deployer roles must TRUST this role (bootstrap edit) or the
-# cross-account assume fails.
+# CodeBuild service role (runs Terraform; assumes the spoke deployer roles)
 # ----------------------------------------------------------------------------
 data "aws_iam_policy_document" "codebuild_assume" {
   statement {
@@ -134,8 +134,7 @@ resource "aws_iam_role_policy" "codepipeline" {
 }
 
 # ----------------------------------------------------------------------------
-# One CodeBuild project, reused by every stage. ENV + MODE come from each
-# pipeline action, so the same project validates or applies any env.
+# One CodeBuild project, reused by every action (ENV + MODE set per action)
 # ----------------------------------------------------------------------------
 resource "aws_codebuild_project" "tf" {
   name         = "shopflow-terraform"
@@ -151,12 +150,13 @@ resource "aws_codebuild_project" "tf" {
 
   source {
     type      = "CODEPIPELINE"
-    buildspec = "buildspec.yml" # from the repo root
+    buildspec = "buildspec.yml"
   }
 }
 
 # ----------------------------------------------------------------------------
-# The pipeline
+# The pipeline. Each deploy env = a plan action (saves tfplan artifact) then an
+# apply action (consumes it). Prod inserts a manual approval between them.
 # ----------------------------------------------------------------------------
 resource "aws_codepipeline" "this" {
   name          = "shopflow"
@@ -181,7 +181,7 @@ resource "aws_codepipeline" "this" {
         ConnectionArn    = var.connection_arn
         FullRepositoryId = var.repo
         BranchName       = var.branch
-        DetectChanges    = "true" # merge to main auto-starts the pipeline
+        DetectChanges    = "true"
       }
     }
   }
@@ -205,12 +205,27 @@ resource "aws_codepipeline" "this" {
   stage {
     name = "Deploy-Dev"
     action {
+      name             = "Plan"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      run_order        = 1
+      input_artifacts  = ["source"]
+      output_artifacts = ["dev_plan"]
+      configuration = {
+        ProjectName          = aws_codebuild_project.tf.name
+        EnvironmentVariables = jsonencode([{ name = "ENV", value = "dev", type = "PLAINTEXT" }, { name = "MODE", value = "plan", type = "PLAINTEXT" }])
+      }
+    }
+    action {
       name            = "Apply"
       category        = "Build"
       owner           = "AWS"
       provider        = "CodeBuild"
       version         = "1"
-      input_artifacts = ["source"]
+      run_order       = 2
+      input_artifacts = ["dev_plan"]
       configuration = {
         ProjectName          = aws_codebuild_project.tf.name
         EnvironmentVariables = jsonencode([{ name = "ENV", value = "dev", type = "PLAINTEXT" }, { name = "MODE", value = "apply", type = "PLAINTEXT" }])
@@ -221,12 +236,27 @@ resource "aws_codepipeline" "this" {
   stage {
     name = "Deploy-Stage"
     action {
+      name             = "Plan"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      run_order        = 1
+      input_artifacts  = ["source"]
+      output_artifacts = ["stage_plan"]
+      configuration = {
+        ProjectName          = aws_codebuild_project.tf.name
+        EnvironmentVariables = jsonencode([{ name = "ENV", value = "stage", type = "PLAINTEXT" }, { name = "MODE", value = "plan", type = "PLAINTEXT" }])
+      }
+    }
+    action {
       name            = "Apply"
       category        = "Build"
       owner           = "AWS"
       provider        = "CodeBuild"
       version         = "1"
-      input_artifacts = ["source"]
+      run_order       = 2
+      input_artifacts = ["stage_plan"]
       configuration = {
         ProjectName          = aws_codebuild_project.tf.name
         EnvironmentVariables = jsonencode([{ name = "ENV", value = "stage", type = "PLAINTEXT" }, { name = "MODE", value = "apply", type = "PLAINTEXT" }])
@@ -235,25 +265,37 @@ resource "aws_codepipeline" "this" {
   }
 
   stage {
-    name = "Approve-Prod"
-    action {
-      name     = "ManualApproval"
-      category = "Approval"
-      owner    = "AWS"
-      provider = "Manual"
-      version  = "1"
-    }
-  }
-
-  stage {
     name = "Deploy-Prod"
+    action {
+      name             = "Plan"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      run_order        = 1
+      input_artifacts  = ["source"]
+      output_artifacts = ["prod_plan"]
+      configuration = {
+        ProjectName          = aws_codebuild_project.tf.name
+        EnvironmentVariables = jsonencode([{ name = "ENV", value = "prod", type = "PLAINTEXT" }, { name = "MODE", value = "plan", type = "PLAINTEXT" }])
+      }
+    }
+    action {
+      name      = "Approve"
+      category  = "Approval"
+      owner     = "AWS"
+      provider  = "Manual"
+      version   = "1"
+      run_order = 2
+    }
     action {
       name            = "Apply"
       category        = "Build"
       owner           = "AWS"
       provider        = "CodeBuild"
       version         = "1"
-      input_artifacts = ["source"]
+      run_order       = 3
+      input_artifacts = ["prod_plan"]
       configuration = {
         ProjectName          = aws_codebuild_project.tf.name
         EnvironmentVariables = jsonencode([{ name = "ENV", value = "prod", type = "PLAINTEXT" }, { name = "MODE", value = "apply", type = "PLAINTEXT" }])
@@ -263,6 +305,6 @@ resource "aws_codepipeline" "this" {
 }
 
 output "codebuild_role_arn" {
-  description = "Add THIS to the spoke deployer_trust in bootstrap, then re-apply bootstrap."
+  description = "Trusted by the spoke deployer roles (see bootstrap/deployer-roles.tf)."
   value       = aws_iam_role.codebuild.arn
 }
