@@ -1,5 +1,6 @@
 data "aws_availability_zones" "available" {
-  provider = aws.dev
+
+  provider = aws.prod
   state    = "available"
   filter {
     name   = "opt-in-status"
