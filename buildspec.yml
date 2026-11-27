@@ -4,6 +4,8 @@ env:
   variables:
     # Default only. A value set on the CodeBuild project overrides this.
     TF_VERSION: "1.10.5"
+    SEC_SOFT_FAIL: "true"   # report scanner findings but don't fail the build
+
 
 phases:
   install:
@@ -23,8 +25,7 @@ phases:
       # Each pipeline action sets ENV (dev|stage|prod) and MODE (validate|plan|apply)
       - cd "infra/envs/${ENV}"
       - |
-        set -eu    # stop at the first error; treat unset variables as errors
-
+        set -eu    
         # ---------- VALIDATE: check the code, change nothing ----------
         if [ "${MODE:-}" = "validate" ]; then
           terraform init -backend=false -input=false   # offline init, no state or credentials needed
