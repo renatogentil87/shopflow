@@ -52,6 +52,23 @@ phases:
             terraform init -input=false
             terraform plan -input=false -out=tfplan
             terraform show -no-color tfplan > plan.txt
+            # Destroy guard: fail if the plan would delete anything, UNLESS the
+            # triggering commit message contains [allow-destroy].
+            terraform show -json tfplan > plan.json
+            DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
+            echo "resources to destroy: $DESTROYS"
+            if [ "$DESTROYS" -gt 0 ]; then
+              echo "Resources that would be DESTROYED:"
+              jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
+              # CODEBUILD_SOURCE_VERSION is the commit SHA CodePipeline checked out.
+              MSG=$(git -C "$CODEBUILD_SRC_DIR" log -1 --pretty=%B 2>/dev/null || echo "")
+              if echo "$MSG" | grep -q '\[allow-destroy\]'; then
+                echo "✅ [allow-destroy] found in commit message — destroy permitted."
+              else
+                echo "❌ Plan would destroy $DESTROYS resource(s). Add [allow-destroy] to the commit message to proceed."
+                exit 1
+              fi
+            fi
             ;;
           apply)
             terraform init -input=false
