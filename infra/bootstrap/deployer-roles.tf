@@ -38,7 +38,12 @@ data "aws_iam_policy_document" "deployer_trust" {
     condition {
       test     = "ArnLike"
       variable = "aws:PrincipalArn"
-      values   = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AWSAdministratorAccess*"]
+      values = [
+        # SSO AdministratorAccess (hash rotation tolerated by the wildcard)
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AWSAdministratorAccess*",
+        # Isengard Administrator role — the identity you actually run Terraform as locally
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/Administrator",
+      ]
     }
   }
 }
