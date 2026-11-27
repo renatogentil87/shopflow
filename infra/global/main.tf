@@ -51,3 +51,5 @@ resource "aws_sns_topic_subscription" "email_alert" {
 resource "aws_sns_topic" "config_alerts" {
   name = "config-rule-alerts"
 }
+
+

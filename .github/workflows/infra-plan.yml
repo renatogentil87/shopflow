@@ -9,16 +9,73 @@ on:
       - "!infra/bootstrap/**"   # bootstrap is applied by hand, never by the pipeline
 
 permissions:
-  id-token: write       # REQUIRED: lets the job mint a GitHub OIDC token to assume the AWS role
+  id-token: write
   contents: read
   pull-requests: write  # optional: to post the plan back onto the PR
 
 jobs:
-  plan:
+  global:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: infra/global   # the governance stack; change per stack
+        working-directory: infra/global
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform fmt -check -recursive
+      - run: terraform validate
+      # - name: tflint / checkov   # install + run here; a non-zero exit fails the PR
+      - run: terraform plan -no-color
+
+  dev:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform fmt -check -recursive
+      - run: terraform validate
+      # - name: tflint / checkov   # install + run here; a non-zero exit fails the PR
+      - run: terraform plan -no-color
+
+  stage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/stage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform fmt -check -recursive
+      - run: terraform validate
+      # - name: tflint / checkov   # install + run here; a non-zero exit fails the PR
+      - run: terraform plan -no-color
+
+  prod:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/envs/prod
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3

@@ -1,5 +1,7 @@
 # .github/workflows/infra-apply.yml
-# Runs on merge to main. Applies the governance stack, gated by a GitHub Environment.
+# Runs on merge to main. Applies each stack, gated per-stage by a GitHub Environment.
+# Order differs from plan: apply is SEQUENTIAL (needs:) so dev must succeed before stage,
+# stage before prod — that's the promotion. global (governance) applies first.
 name: infra-apply
 
 on:
@@ -14,9 +16,9 @@ permissions:
   contents: read
 
 jobs:
-  apply-governance:
+  global:
     runs-on: ubuntu-latest
-    environment: prod
+    environment: global
     defaults:
       run:
         working-directory: infra/global
@@ -31,6 +33,56 @@ jobs:
       - run: terraform init
       - run: terraform apply -auto-approve
 
-  # For the PER-ENV APP stacks (infra/envs/dev|stage|prod) you add the promotion:
-  # apply-dev -> apply-stage (needs apply-dev) -> apply-prod (needs apply-stage),
-  # each with environment: <env> and role-to-assume pointing at that env's role.
+  dev:
+    needs: global
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: infra/envs/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform apply -auto-approve
+
+  stage:
+    needs: dev
+    runs-on: ubuntu-latest
+    environment: stage
+    defaults:
+      run:
+        working-directory: infra/envs/stage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform apply -auto-approve
+
+  prod:
+    needs: stage               # promotion: only after stage succeeds
+    runs-on: ubuntu-latest
+    environment: prod          # gated — add required reviewers on this Environment
+    defaults:
+      run:
+        working-directory: infra/envs/prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Configure AWS creds via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.CENTRAL_ACCOUNT_ID }}:role/shopflow-pipeline
+          aws-region: ca-central-1
+      - run: terraform init
+      - run: terraform apply -auto-approve

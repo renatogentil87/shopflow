@@ -72,7 +72,14 @@ data "aws_iam_policy_document" "deployer_perms" {
     ]
     resources = ["*"] # TODO: scope to the forwarder role ARN
   }
+  statement {
+    sid = "EC2Permissions"
+    effect = "Allow"
+    actions = ["ec2:*"]
+    resources = ["*"]
+  }
 }
+
 
 # --- DEV ---
 resource "aws_iam_role" "deployer_dev" {
