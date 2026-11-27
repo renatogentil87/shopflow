@@ -1,6 +1,6 @@
 data "aws_availability_zones" "available" {
   provider = aws.dev
-  state = "available"
+  state    = "available"
   filter {
     name   = "opt-in-status"
     values = ["opt-in-not-required"]
@@ -12,8 +12,8 @@ locals {
 }
 
 module "network" {
-  source    = "../../modules/network"
-  providers = { aws = aws.dev }
+  source               = "../../modules/network"
+  providers            = { aws = aws.dev }
   environment          = "dev"
   vpc_cidr             = var.vpc_cidr
   azs                  = local.azs

@@ -39,17 +39,43 @@ Create (or point your existing project at) these buildspec paths:
 - Image: `aws/codebuild/standard:7.0` (Ubuntu) or newer.
 - `TF_VERSION` in both files must match the Terraform version that wrote your state
   (your local `.terraform` recorded `1.17.2`). Keep Test and Apply identical.
-- Variables: `.gitignore` excludes `*.tfvars`, so `terraform.tfvars` is **not** in the source.
-  Supply inputs one of these ways:
-  - `TF_VAR_vpc_cidr`, `TF_VAR_public_subnet_cidrs`, … as CodeBuild env vars, or
-  - `parameter-store:` entries (see the commented block in `test.yml`), or
-  - commit `infra/envs/dev/dev.tfvars.example`, copy to `dev.tfvars` in the build, and it is
-    auto-picked by the `-var-file` guard in `test.yml`.
+
+## Variables — where each one comes from
+
+Split by sensitivity:
+
+- **Non-secret config, committed for PR review** — `vpc_cidr`, `public_subnet_cidrs`,
+  `private_subnet_cidrs`, `region`, `az_count` live in `infra/envs/dev/dev.auto.tfvars`.
+  Terraform auto-loads `*.auto.tfvars`, so it works locally and in CI with no `-var-file`. A
+  `.gitignore` exception (`!*.auto.tfvars`) keeps this file tracked even though `*.tfvars` is
+  ignored. **Never put account IDs or secrets in an `*.auto.tfvars` file.**
+- **`account_ids` — kept out of GitHub, in SSM.** Stored at `/shopflow/account_ids` as one map
+  for all envs. The buildspecs read it via their `parameter-store` block and expose it as
+  `TF_VAR_account_ids`, which Terraform picks up automatically. (Your `providers.tf` uses it to
+  assume `shopflow-governance-deployer` in each spoke.)
+
+### Create the SSM parameter BEFORE the first run
+
+CodeBuild resolves `parameter-store` entries at build start — if the parameter is missing, the
+build fails immediately. Create it once (out-of-band; it is not managed by the env stack that
+consumes it). Account IDs are not credentials, so a plain `String` is fine:
+
+```bash
+aws ssm put-parameter \
+  --name /shopflow/account_ids \
+  --type String \
+  --value '{"dev":"<DEV_ID>","stage":"<STAGE_ID>","prod":"<PROD_ID>"}' \
+  --region ca-central-1
+# fill the IDs from your local infra/envs/dev/terraform.tfvars (which stays gitignored)
+```
+
+Local runs are unaffected: your gitignored `terraform.tfvars` still supplies `account_ids`
+locally. (You can trim it to just `account_ids` now that CIDRs live in `dev.auto.tfvars`.)
 
 ## CodeBuild service role — minimum IAM
 
-The CodeBuild role needs: state backend access, permission to create the dev resources (directly,
-or by assuming a dev deploy role), and CloudWatch Logs. Replace placeholders.
+The CodeBuild role needs: state backend access, the SSM parameter, permission to create the dev
+resources (directly, or by assuming a dev deploy role), and CloudWatch Logs. Replace placeholders.
 
 ```json
 {
@@ -68,6 +94,12 @@ or by assuming a dev deploy role), and CloudWatch Logs. Replace placeholders.
       "Resource": "arn:aws:s3:::shopflow-global-resources-tfstate/env/*"
     },
     {
+      "Sid": "ReadAccountIdsParam",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:ca-central-1:<CENTRAL_ACCOUNT_ID>:parameter/shopflow/account_ids"
+    },
+    {
       "Sid": "Logs",
       "Effect": "Allow",
       "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
@@ -83,31 +115,27 @@ or by assuming a dev deploy role), and CloudWatch Logs. Replace placeholders.
 }
 ```
 
+- `String` SSM param → no `kms:Decrypt` needed. If you switch it to `SecureString`, add
+  `kms:Decrypt` on the key.
 - `use_lockfile=true` (S3-native locking, Terraform ≥ 1.10) means **no DynamoDB lock table** is
   needed — just the S3 object permissions above.
-- If CodeBuild runs in the **central** account and deploys into dev by assuming
-  `shopflow-governance-deployer`, keep the `AssumeDevDeployRole` statement and have the dev env's
-  provider assume that role. If CodeBuild runs **in the dev account directly**, drop that statement
-  and instead grant the VPC-creation permissions (ec2:*Vpc*, subnets, route tables, IGW, NAT, EIP,
-  flow logs, the logs role) — scope them down from `ec2:*`.
+- `AssumeDevDeployRole` matches your `dev/providers.tf`, which assumes
+  `arn:aws:iam::<DEV_ACCOUNT_ID>:role/shopflow-governance-deployer`. That deployer role must exist
+  in the dev account (from `infra/bootstrap`) with the VPC-creation permissions.
 
-## Prerequisites still open (pipeline will go green but deploy NOTHING until these exist)
+## Still open before a green end-to-end run
 
-The Test/Apply buildspecs are correct, but the dev stack is empty, so a run today plans "No
-changes." To actually create the dev VPC you still need:
+The dev VPC module is written — it lives on the **`dev-vpc` branch** (commit `cf2ffa7`,
+"feat(network): dev VPC via module"), not yet on `main`. To get a run that creates the VPC:
 
-1. **`infra/modules/network`** — currently 0-byte stubs. Needs the VPC/subnets/route-tables/IGW/
-   NAT/flow-logs module. Two ADR-level choices your ROADMAP (M1) flags: NAT **per-AZ vs single**,
-   and **attach to the shared TGW/Cloud WAN vs standalone VPC**.
-2. **`infra/envs/dev/main.tf`** — currently empty. Needs to call the network module with the dev
-   `vpc_cidr` / subnet CIDRs.
-3. **`infra/envs/dev/backend.tf`** — currently empty. Needs the S3 partial backend block
-   (`terraform { backend "s3" {} }`) so `terraform init -backend-config=...` works in CI. Your dev
-   `.terraform` already remembers bucket `shopflow-global-resources-tfstate`, key
-   `env/dev/terraform.tfstate`, region `ca-central-1`.
-4. **`infra/envs/dev/providers.tf` / `terraform.tf`** — provider + `required_providers` (aws ~> 5.92)
-   for the dev stack, matching `infra/global`.
+1. **Merge the module to `main`.** Open a PR `dev-vpc` → `main`. Include `buildspec/` and
+   `infra/envs/dev/dev.auto.tfvars` in it (commit them onto `dev-vpc` first so one PR carries
+   module + pipeline + config). Expect a modify/delete conflict on the old
+   `.github/workflows/infra-*.yml` — resolve by keeping them deleted (moving to CodePipeline).
+2. **Create the SSM parameter** `/shopflow/account_ids` (command above).
+3. **Grant the CodeBuild role** the IAM above (state bucket, SSM param, assume deployer role).
+4. **Confirm the pipeline has an Apply stage** wired to `buildspec/apply.yml` with the Test
+   action's output artifact as its input — otherwise it plans but never applies.
 
-Items 1–4 are Terraform changes, which you asked me not to make unless necessary. They ARE
-necessary for "VPC in dev," so I've left them for your go-ahead rather than inventing the module
-design and the two ADR decisions for you.
+Items 2–4 are in your AWS account (CodePipeline / IAM / SSM), which this repo does not manage;
+set them once by hand or add them to `infra/bootstrap`.

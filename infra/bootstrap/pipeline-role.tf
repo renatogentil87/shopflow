@@ -25,7 +25,7 @@ data "aws_iam_policy_document" "pipeline_trust" {
       # Start broad-ish (any ref in your repo). Tighten later to a branch
       # (repo:<owner>/<repo>:ref:refs/heads/main) or environment
       # (repo:<owner>/<repo>:environment:prod).
-      values   = ["repo:${var.github_repo}:*"]
+      values = ["repo:${var.github_repo}:*"]
     }
   }
 }
@@ -39,9 +39,9 @@ resource "aws_iam_role" "pipeline" {
 # (1) assume the spoke deployer roles; (2) manage the central governance resources.
 data "aws_iam_policy_document" "pipeline_perms" {
   statement {
-    sid       = "AssumeSpokeDeployers"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
+    sid     = "AssumeSpokeDeployers"
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
     resources = [
       "arn:aws:iam::${var.account_ids["dev"]}:role/shopflow-governance-deployer",
       "arn:aws:iam::${var.account_ids["stage"]}:role/shopflow-governance-deployer",

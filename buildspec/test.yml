@@ -21,10 +21,11 @@
 #   SEC_SOFT_FAIL    "true" to report security findings without failing the build
 #                    (default "false" = a HIGH/CRITICAL finding fails the stage).
 #
-# NOTE on variables: this repo's .gitignore excludes *.tfvars, so terraform.tfvars is
-# NOT in the CodeBuild source. Pass input variables as TF_VAR_* environment variables
-# on the CodeBuild project (or load them from SSM Parameter Store), or commit a
-# sanitized infra/envs/<env>/<env>.tfvars.example and `-var-file` it. See buildspec/README.md.
+# NOTE on variables:
+#   - Non-secret config (CIDRs, subnets, region, az_count) lives in a committed
+#     infra/envs/<env>/<env>.auto.tfvars and is auto-loaded by Terraform (no -var-file needed).
+#   - account_ids is kept OUT of git: stored in SSM at /shopflow/account_ids and injected
+#     below as TF_VAR_account_ids. See buildspec/README.md.
 
 version: 0.2
 
@@ -32,9 +33,10 @@ env:
   variables:
     TF_VERSION: "1.17.2"            # change to match your local `terraform version`
     SEC_SOFT_FAIL: "false"
-  # Example: pull non-secret tf vars from SSM instead of committing tfvars.
-  # parameter-store:
-  #   TF_VAR_vpc_cidr: /shopflow/dev/vpc_cidr
+  parameter-store:
+    # account_ids is kept out of GitHub — read from SSM and injected as a Terraform
+    # variable. One shared param holds all envs: {"dev":"...","stage":"...","prod":"..."}
+    TF_VAR_account_ids: /shopflow/account_ids
 
 phases:
   install:
@@ -77,7 +79,8 @@ phases:
       - echo "== security: trivy config ==" && trivy config . --severity HIGH,CRITICAL $( [ "${SEC_SOFT_FAIL}" = "true" ] && echo "--exit-code 0" || echo "--exit-code 1" )
       # terraform test runs *.tftest.hcl if any exist; skip cleanly when there are none.
       - echo "== terraform test ==" && ( ls ./tests/*.tftest.hcl *.tftest.hcl >/dev/null 2>&1 && terraform test || echo "no .tftest.hcl files, skipping" )
-      - echo "== terraform plan ==" && terraform plan -input=false -lock=true -out=tfplan $( [ -f "${TF_ENV}.tfvars" ] && echo "-var-file=${TF_ENV}.tfvars" )
+      # account_ids arrives via TF_VAR_account_ids (SSM); CIDRs/region via dev.auto.tfvars (auto-loaded).
+      - echo "== terraform plan ==" && terraform plan -input=false -lock=true -out=tfplan
       - terraform show -no-color tfplan > plan.txt
       - echo "Plan written. Review in the Apply stage / approval gate."
 

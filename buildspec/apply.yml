@@ -10,6 +10,10 @@
 # OPTIONAL:
 #   TF_VERSION  (MUST match test.yml / your local version)
 #
+# account_ids is read from SSM (/shopflow/account_ids) into TF_VAR_account_ids below. Apply
+# re-evaluates provider config (the aliased providers assume_role using account_ids), so it is
+# needed at apply time too, not just at plan.
+#
 # INPUT: the "tf-plan-$TF_ENV" artifact from the Test action (set it as the input
 #        artifact of this CodeBuild action in CodePipeline). It contains the working
 #        dir, .terraform plugins, the lockfile, and the saved `tfplan`.
@@ -19,6 +23,8 @@ version: 0.2
 env:
   variables:
     TF_VERSION: "1.17.2"            # keep identical to buildspec/test.yml
+  parameter-store:
+    TF_VAR_account_ids: /shopflow/account_ids
 
 phases:
   install:

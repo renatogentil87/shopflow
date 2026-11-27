@@ -10,14 +10,18 @@
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "deployer_trust" {
-  # CI path: the central pipeline role may assume these (used by the pipeline).
+  # CI path: the CodeBuild service role (active CI identity) and the legacy
+  # GitHub-OIDC pipeline role may assume these.
   statement {
-    sid     = "PipelineRole"
+    sid     = "CiRoles"
     effect  = "Allow"
     actions = ["sts:AssumeRole"]
     principals {
-      type        = "AWS"
-      identifiers = [aws_iam_role.pipeline.arn]
+      type = "AWS"
+      identifiers = [
+        aws_iam_role.pipeline.arn,
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/shopflow-codebuild",
+      ]
     }
   }
 
@@ -73,9 +77,9 @@ data "aws_iam_policy_document" "deployer_perms" {
     resources = ["*"] # TODO: scope to the forwarder role ARN
   }
   statement {
-    sid = "EC2Permissions"
-    effect = "Allow"
-    actions = ["ec2:*"]
+    sid       = "EC2Permissions"
+    effect    = "Allow"
+    actions   = ["ec2:*"]
     resources = ["*"]
   }
 }

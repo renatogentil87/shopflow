@@ -28,11 +28,16 @@ override.tf.json
 *.pem
 *.key
 
-# Terraform variable values — may contain account IDs; never publish.
-# Ignore ALL tfvars; commit a sanitized *.tfvars.example if you want a template.
+# Terraform variable values.
+# Env tfvars ARE committed (IP scheme / region reviewed in PR) — no secrets in them.
+# Account IDs live in SSM. Everything else (bootstrap tfvars, *.auto.tfvars) stays ignored.
 *.tfvars
 *.tfvars.json
+!infra/envs/*/terraform.tfvars
 !*.tfvars.example
+# EXCEPTION: *.auto.tfvars is committed on purpose (non-secret, PR-reviewed config).
+# NEVER put account IDs or secrets in an *.auto.tfvars file — those go in SSM.
+!*.auto.tfvars
 
 # Editor / OS
 .idea/
