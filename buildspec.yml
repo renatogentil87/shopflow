@@ -1,19 +1,19 @@
 version: 0.2
 
-# One buildspec, reused by every pipeline action. Two inputs come from the action:
-#   ENV  = dev | stage | prod        (which infra/envs/<ENV> dir to run)
+# One buildspec, reused by every pipeline action. Inputs from the action:
+#   ENV  = dev | stage | prod
 #   MODE = validate | plan | apply
 #
-#   validate : fmt + validate (changes nothing)
-#   plan     : terraform plan -out=tfplan  (+ human-readable plan.txt); the pipeline
-#              exports the whole tree as this action's OUTPUT artifact
-#   apply    : terraform apply of the SAVED tfplan from the plan action's artifact
+#   validate : fmt + validate + checkov + trivy + terraform test  (offline, no state)
+#   plan     : terraform plan -out=tfplan (+ plan.txt); exported as the action artifact
+#   apply    : terraform apply of the SAVED tfplan
 #
-# Terraform isn't in the standard CodeBuild image, so we install it here.
+# SEC_SOFT_FAIL=true reports security findings without failing the build (default: fail).
 
 env:
   variables:
     TF_VERSION: "1.10.5"
+    SEC_SOFT_FAIL: "false"
 
 phases:
   install:
@@ -21,21 +21,40 @@ phases:
       - curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tf.zip
       - unzip -o /tmp/tf.zip -d /usr/local/bin
       - terraform version
+      # Scanners are only needed for the validate stage — skip them for plan/apply.
+      - |
+        if [ "$MODE" = "validate" ]; then
+          pip install --quiet checkov
+          curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
+        fi
   build:
     commands:
       - cd "infra/envs/${ENV}"
-      - terraform init -input=false
       - |
         case "$MODE" in
           validate)
+            # offline init: installs providers + modules, no backend/state/creds needed
+            terraform init -backend=false -input=false
             terraform fmt -check -recursive ../..
             terraform validate
+            if [ "$SEC_SOFT_FAIL" = "true" ]; then SOFT="--soft-fail"; TRIVY_EXIT=0; else SOFT=""; TRIVY_EXIT=1; fi
+            echo "== checkov ==" && checkov -d . --quiet --compact $SOFT
+            echo "== trivy ==" && trivy config . --severity HIGH,CRITICAL --exit-code $TRIVY_EXIT
+            # terraform test runs *.tftest.hcl if any exist; keep them command=plan (non-mutating)
+            if ls *.tftest.hcl tests/*.tftest.hcl >/dev/null 2>&1; then
+              echo "== terraform test ==" && terraform test
+            else
+              echo "no .tftest.hcl files, skipping terraform test"
+            fi
             ;;
           plan)
+            terraform init -input=false
             terraform plan -input=false -out=tfplan
             terraform show -no-color tfplan > plan.txt
             ;;
           apply)
+            terraform init -input=false
             terraform apply -input=false tfplan
             ;;
           *)
@@ -43,9 +62,6 @@ phases:
             ;;
         esac
 
-# Carry the WHOLE tree to the next action: the apply action needs the env dir,
-# the saved tfplan, AND the modules it references (../../modules/...). Apply
-# re-inits (fast, honours the lock file) then applies the saved plan.
 artifacts:
   files:
     - '**/*'
