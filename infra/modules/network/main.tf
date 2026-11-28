@@ -15,6 +15,7 @@ resource "aws_vpc" "this" {
   tags = {
     Name        = "${var.environment}-vpc"
     Environment = var.environment
+    ManagedBy = "Terraform"
   }
 }
 
@@ -22,6 +23,7 @@ resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
   tags = {
     Name = "${var.environment}-igw"
+    ManagedBy = "Terraform"
   }
 }
 
@@ -46,6 +48,7 @@ resource "aws_subnet" "private" {
 
   tags = {
     Name = "${var.environment}-private-${var.azs[count.index]}"
+    ManagedBy = "Terraform"
   }
 }
 
@@ -59,6 +62,7 @@ resource "aws_route_table" "public" {
 
   tags = {
     Name = "${var.environment}-public-rt"
+    ManagedBy = "Terraform"
   }
 }
 
