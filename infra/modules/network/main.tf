@@ -34,6 +34,7 @@ resource "aws_subnet" "public" {
 
   tags = {
     Name = "${var.environment}-public-${var.azs[count.index]}"
+    ManagedBy = "Terraform"
   }
 }
 
