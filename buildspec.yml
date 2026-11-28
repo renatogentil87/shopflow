@@ -57,12 +57,12 @@ phases:
             terraform show -json tfplan > plan.json
             # Destroy guard: fail if the plan would delete anything, UNLESS the
             # triggering commit message contains [allow-destroy].
-            DESTROYS=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
+            DESTROYS=$(jq '[(.resource_changes // [])[] | select(.change.actions | index("delete"))] | length' plan.json)
             case "$DESTROYS" in ''|*[!0-9]*) echo "could not compute destroy count"; exit 1;; esac
             echo "resources to destroy: $DESTROYS"
             if [ "$DESTROYS" -gt 0 ]; then
               echo "Resources that would be DESTROYED:"
-              jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
+              jq -r '(.resource_changes // [])[] | select(.change.actions | index("delete")) | "  - " + .address' plan.json
               # CODEBUILD_SOURCE_VERSION is the commit SHA CodePipeline checked out.
               MSG=$(git -C "$CODEBUILD_SRC_DIR" log -1 --pretty=%B 2>/dev/null || echo "")
               if echo "$MSG" | grep -q '\[allow-destroy\]'; then
