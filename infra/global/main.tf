@@ -13,6 +13,14 @@ resource "aws_s3_bucket" "shopflow-global-resources-tfstate" {
   }
 }
 
+
+resource "aws_s3_bucket_versioning" "tfstate" {
+  bucket = "shopflow-global-resources-tfstate"
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_config_organization_managed_rule" "s3_block_public_access" {
   name              = "s3-bucket-level-public-access-prohibited"
   rule_identifier   = "S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED"
